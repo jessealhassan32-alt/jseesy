@@ -1,0 +1,6 @@
+{
+  "name": "Jesse's Highway Roadster - 3D Stunt Racer",
+  "description": "3D synthwave highway stunt racer created by Jesse (@jessej6228). Perform aerial flips, barrel rolls, rocket boosts, and traffic smashes.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
