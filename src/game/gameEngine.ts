@@ -1,6 +1,11 @@
 import * as THREE from 'three';
+import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
+import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js';
+import { SMAAPass } from 'three/examples/jsm/postprocessing/SMAAPass.js';
+import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
 import { HeroCar, CarOptions } from './heroCar';
-import { HighwayEnvironment } from './environment';
+import { HighwayEnvironment, createSkyEnvironmentScene } from './environment';
 import { TrafficManager, TrafficCar } from './trafficManager';
 import { ParticleSystem } from './particleSystem';
 import { soundManager } from '../audio/soundManager';
@@ -19,6 +24,10 @@ export class GameEngine {
   private animFrameId: number = 0;
   private isSoftwareGl: boolean = false;
   private container: HTMLDivElement;
+  private composer: EffectComposer | null = null;
+  private bloomPass: UnrealBloomPass | null = null;
+  private sunLight: THREE.DirectionalLight;
+  private readonly sunOffset = new THREE.Vector3(-25, 45, -35);
 
   // Game state
   public status: GameStatus = 'idle';
@@ -108,14 +117,22 @@ export class GameEngine {
       powerPreference: 'high-performance',
     });
     this.renderer.setSize(container.clientWidth, container.clientHeight);
-    this.renderer.setPixelRatio(this.isSoftwareGl ? 1 : Math.min(window.devicePixelRatio, 2));
+    // Render at native display resolution (up to 4K-class density) on real GPUs
+    this.renderer.setPixelRatio(this.isSoftwareGl ? 1 : Math.min(window.devicePixelRatio, 2.5));
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
-    this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    this.renderer.toneMappingExposure = 1.25; // Bright, high-clarity exposure
+    this.renderer.toneMapping = THREE.AgXToneMapping;
+    this.renderer.toneMappingExposure = 1.35;
     this.renderer.shadowMap.enabled = !this.isSoftwareGl;
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 
     container.appendChild(this.renderer.domElement);
+
+    // Image-based lighting: gives car paint, glass and chrome real reflections
+    const pmrem = new THREE.PMREMGenerator(this.renderer);
+    const envScene = createSkyEnvironmentScene();
+    this.scene.environment = pmrem.fromScene(envScene, 0.02).texture;
+    this.scene.environmentIntensity = 0.8;
+    pmrem.dispose();
 
     // Warm Key Light + Rich Fill Light so cars and road are never dark
     const hemiLight = new THREE.HemisphereLight(0x9d4edd, 0xff9100, 1.2);
@@ -124,16 +141,20 @@ export class GameEngine {
     const dirLight = new THREE.DirectionalLight(0xffbe6b, 2.8);
     dirLight.position.set(-25, 45, -35);
     dirLight.castShadow = !this.isSoftwareGl;
-    dirLight.shadow.mapSize.width = 1024;
-    dirLight.shadow.mapSize.height = 1024;
+    dirLight.shadow.mapSize.width = 4096;
+    dirLight.shadow.mapSize.height = 4096;
     dirLight.shadow.camera.near = 0.5;
-    dirLight.shadow.camera.far = 140;
-    dirLight.shadow.camera.left = -25;
-    dirLight.shadow.camera.right = 25;
-    dirLight.shadow.camera.top = 25;
-    dirLight.shadow.camera.bottom = -25;
-    dirLight.shadow.bias = -0.0005;
+    dirLight.shadow.camera.far = 160;
+    dirLight.shadow.camera.left = -30;
+    dirLight.shadow.camera.right = 30;
+    dirLight.shadow.camera.top = 45;
+    dirLight.shadow.camera.bottom = -30;
+    dirLight.shadow.bias = -0.0003;
+    dirLight.shadow.normalBias = 0.03;
+    dirLight.shadow.radius = 3;
     this.scene.add(dirLight);
+    this.scene.add(dirLight.target);
+    this.sunLight = dirLight;
 
     // Subsystems
     this.environment = new HighwayEnvironment(this.scene, dirLight, hemiLight);
@@ -144,6 +165,7 @@ export class GameEngine {
 
     this.clock = new THREE.Clock();
     this.setupInputs();
+    this.setupPostProcessing(container.clientWidth, container.clientHeight);
 
     if (!this.isSoftwareGl) {
       this.renderer.compile(this.scene, this.camera);
@@ -151,6 +173,23 @@ export class GameEngine {
 
     this.resetCarToRamp();
     this.updateCamera(0.016);
+  }
+
+  // Cinematic post-processing: MSAA + SMAA edges, HDR bloom on lights and neon
+  private setupPostProcessing(width: number, height: number) {
+    if (this.isSoftwareGl) return;
+
+    const target = new THREE.WebGLRenderTarget(width, height, {
+      type: THREE.HalfFloatType,
+      samples: 4,
+    });
+    this.composer = new EffectComposer(this.renderer, target);
+    this.composer.addPass(new RenderPass(this.scene, this.camera));
+
+    this.bloomPass = new UnrealBloomPass(new THREE.Vector2(width, height), 0.55, 0.6, 0.82);
+    this.composer.addPass(this.bloomPass);
+    this.composer.addPass(new SMAAPass());
+    this.composer.addPass(new OutputPass());
   }
 
   private setupInputs() {
@@ -502,7 +541,11 @@ export class GameEngine {
     const tick = () => {
       const delta = Math.min(this.clock.getDelta(), 0.1);
       this.update(delta);
-      this.renderer.render(this.scene, this.camera);
+      if (this.composer) {
+        this.composer.render(delta);
+      } else {
+        this.renderer.render(this.scene, this.camera);
+      }
 
       this.animFrameId = requestAnimationFrame(tick);
     };
@@ -691,6 +734,13 @@ export class GameEngine {
     this.updateCamera(delta);
   }
 
+  // Keep the high-resolution shadow frustum centred on the action
+  private updateSunShadow() {
+    const focus = this.heroCar.group.position;
+    this.sunLight.target.position.set(0, 0, focus.z - 10);
+    this.sunLight.position.copy(this.sunLight.target.position).add(this.sunOffset);
+  }
+
   private checkCollisions() {
     const heroBox = {
       minX: this.carCurrentX - 0.95,
@@ -814,12 +864,15 @@ export class GameEngine {
     }
 
     this.camera.lookAt(lookTarget);
+    this.updateSunShadow();
   }
 
   public resize(width: number, height: number) {
     this.camera.aspect = width / height;
     this.camera.updateProjectionMatrix();
     this.renderer.setSize(width, height);
+    this.composer?.setPixelRatio(this.renderer.getPixelRatio());
+    this.composer?.setSize(width, height);
   }
 
   public dispose() {
@@ -831,6 +884,8 @@ export class GameEngine {
     this.container.removeEventListener('touchend', this.handleTouchEnd);
     this.container.removeEventListener('mousedown', this.handleMouseDown);
     window.removeEventListener('mouseup', this.handleMouseUp);
+    this.composer?.dispose();
+    this.scene.environment?.dispose();
     this.renderer.dispose();
   }
 }
