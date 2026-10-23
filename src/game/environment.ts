@@ -47,7 +47,8 @@ export class HighwayEnvironment {
   private furthestForwardZ: number = 0;
 
   private roadTexture: THREE.CanvasTexture;
-  private oceanTexture: THREE.CanvasTexture;
+  private roadBumpTexture: THREE.CanvasTexture;
+  private waterNormalTexture: THREE.CanvasTexture;
   private billboardTextures: THREE.CanvasTexture[] = [];
   private roadMaterials: THREE.MeshStandardMaterial[] = [];
 
@@ -58,7 +59,8 @@ export class HighwayEnvironment {
 
     // Create procedural textures
     this.roadTexture = this.createRoadTexture();
-    this.oceanTexture = this.createOceanTexture();
+    this.roadBumpTexture = this.createRoadBumpTexture();
+    this.waterNormalTexture = this.createWaterNormalTexture();
     this.billboardTextures = this.createBillboardTextures();
 
     // 1. Sky & Sun Backdrop (Bright, high-visibility synthwave sunset)
@@ -83,12 +85,15 @@ export class HighwayEnvironment {
     this.scene.add(this.launchRampGroup);
 
     // 4. Ocean / Bay Water
-    const waterGeo = new THREE.PlaneGeometry(1600, 1600, 32, 32);
-    const waterMat = new THREE.MeshStandardMaterial({
-      color: 0x220c38,
-      roughness: 0.25,
-      metalness: 0.85,
-      map: this.oceanTexture,
+    const waterGeo = new THREE.PlaneGeometry(1600, 1600, 1, 1);
+    const waterMat = new THREE.MeshPhysicalMaterial({
+      color: 0x120a24,
+      roughness: 0.06,
+      metalness: 0.0,
+      ior: 1.33,
+      normalMap: this.waterNormalTexture,
+      normalScale: new THREE.Vector2(0.6, 0.6),
+      envMapIntensity: 1.4,
     });
     this.waterMesh = new THREE.Mesh(waterGeo, waterMat);
     this.waterMesh.rotation.x = -Math.PI / 2;
@@ -239,78 +244,175 @@ export class HighwayEnvironment {
     return group;
   }
 
+  // High-resolution asphalt: aggregate grain, tyre polish, tar seams and worn paint
   private createRoadTexture(): THREE.CanvasTexture {
+    const W = 1024;
+    const H = 4096;
     const canvas = document.createElement('canvas');
-    canvas.width = 512;
-    canvas.height = 1024;
+    canvas.width = W;
+    canvas.height = H;
     const ctx = canvas.getContext('2d')!;
 
-    // Asphalt base (Clean dark asphalt)
-    ctx.fillStyle = '#181b26';
-    ctx.fillRect(0, 0, 512, 1024);
+    ctx.fillStyle = '#23252d';
+    ctx.fillRect(0, 0, W, H);
 
-    for (let i = 0; i < 3000; i++) {
-      ctx.fillStyle = Math.random() > 0.5 ? '#202433' : '#141620';
-      ctx.fillRect(Math.random() * 512, Math.random() * 1024, 2, 2);
+    // Aggregate grain at several scales
+    const grain = ctx.getImageData(0, 0, W, H);
+    const d = grain.data;
+    for (let i = 0; i < d.length; i += 4) {
+      const n = (Math.random() - 0.5) * 26 + (Math.random() > 0.985 ? 30 : 0) - (Math.random() > 0.97 ? 18 : 0);
+      d[i] = Math.max(0, Math.min(255, d[i] + n));
+      d[i + 1] = Math.max(0, Math.min(255, d[i + 1] + n));
+      d[i + 2] = Math.max(0, Math.min(255, d[i + 2] + n * 1.05));
+    }
+    ctx.putImageData(grain, 0, 0);
+
+    // Large-scale tonal patches (repairs, sun bleaching)
+    for (let i = 0; i < 40; i++) {
+      const x = Math.random() * W;
+      const y = Math.random() * H;
+      const r = 60 + Math.random() * 220;
+      const g = ctx.createRadialGradient(x, y, 0, x, y, r);
+      const tone = Math.random() > 0.5 ? '255,255,255' : '0,0,0';
+      g.addColorStop(0, `rgba(${tone},0.05)`);
+      g.addColorStop(1, `rgba(${tone},0)`);
+      ctx.fillStyle = g;
+      ctx.fillRect(x - r, y - r, r * 2, r * 2);
     }
 
-    // Lane dashes
-    const dividers = [128, 256, 384];
-    ctx.fillStyle = '#ffffff';
-    ctx.shadowColor = '#00f0ff';
-    ctx.shadowBlur = 10;
-
-    for (const x of dividers) {
-      for (let y = 0; y < 1024; y += 128) {
-        ctx.fillRect(x - 3, y + 24, 6, 80);
+    // Darker polished tyre tracks in each lane
+    const laneW = W / 4;
+    for (let l = 0; l < 4; l++) {
+      for (const off of [0.28, 0.72]) {
+        const cx = l * laneW + laneW * off;
+        const g = ctx.createLinearGradient(cx - 40, 0, cx + 40, 0);
+        g.addColorStop(0, 'rgba(0,0,0,0)');
+        g.addColorStop(0.5, 'rgba(0,0,0,0.22)');
+        g.addColorStop(1, 'rgba(0,0,0,0)');
+        ctx.fillStyle = g;
+        ctx.fillRect(cx - 40, 0, 80, H);
       }
     }
 
-    // Neon edge stripes
-    ctx.shadowBlur = 16;
-    ctx.fillStyle = '#ff007f';
-    ctx.shadowColor = '#ff007f';
-    ctx.fillRect(16, 0, 8, 1024);
-
-    ctx.fillStyle = '#00f0ff';
-    ctx.shadowColor = '#00f0ff';
-    ctx.fillRect(488, 0, 8, 1024);
-
-    const texture = new THREE.CanvasTexture(canvas);
-    texture.wrapS = THREE.RepeatWrapping;
-    texture.wrapT = THREE.RepeatWrapping;
-    texture.colorSpace = THREE.SRGBColorSpace;
-    return texture;
-  }
-
-  private createOceanTexture(): THREE.CanvasTexture {
-    const canvas = document.createElement('canvas');
-    canvas.width = 512;
-    canvas.height = 512;
-    const ctx = canvas.getContext('2d')!;
-
-    const grad = ctx.createLinearGradient(0, 0, 0, 512);
-    grad.addColorStop(0, '#421252');
-    grad.addColorStop(0.5, '#1b0c30');
-    grad.addColorStop(1, '#0e051a');
-    ctx.fillStyle = grad;
-    ctx.fillRect(0, 0, 512, 512);
-
-    ctx.strokeStyle = 'rgba(255, 120, 200, 0.35)';
-    ctx.lineWidth = 2.5;
-    for (let y = 0; y < 512; y += 24) {
+    // Tar-sealed cracks
+    ctx.strokeStyle = 'rgba(8,8,12,0.75)';
+    for (let i = 0; i < 26; i++) {
+      ctx.lineWidth = 1.5 + Math.random() * 2.5;
       ctx.beginPath();
-      ctx.moveTo(0, y);
-      ctx.bezierCurveTo(128, y - 6, 384, y + 6, 512, y);
+      let x = Math.random() * W;
+      let y = Math.random() * H;
+      ctx.moveTo(x, y);
+      const segs = 6 + Math.floor(Math.random() * 10);
+      for (let k = 0; k < segs; k++) {
+        x += (Math.random() - 0.5) * 70;
+        y += (Math.random() - 0.3) * 90;
+        ctx.lineTo(x, y);
+      }
       ctx.stroke();
     }
 
+    // Worn lane paint with slight edge breakup
+    const paint = (x: number, y: number, w: number, h: number, color: string) => {
+      ctx.fillStyle = color;
+      ctx.fillRect(x, y, w, h);
+      ctx.fillStyle = 'rgba(35,37,45,0.55)';
+      for (let i = 0; i < (w * h) / 60; i++) {
+        ctx.fillRect(x + Math.random() * w, y + Math.random() * h, 2, 2);
+      }
+    };
+
+    const dividers = [256, 512, 768];
+    for (const x of dividers) {
+      for (let y = 0; y < H; y += 512) {
+        paint(x - 7, y + 96, 14, 320, 'rgba(240,240,232,0.92)');
+      }
+    }
+
+    // Edge lines + neon accent strip
+    paint(52, 0, 16, H, 'rgba(250,250,245,0.9)');
+    paint(W - 68, 0, 16, H, 'rgba(250,250,245,0.9)');
+    ctx.shadowBlur = 18;
+    ctx.fillStyle = '#ff007f';
+    ctx.shadowColor = '#ff007f';
+    ctx.fillRect(22, 0, 10, H);
+    ctx.fillStyle = '#00f0ff';
+    ctx.shadowColor = '#00f0ff';
+    ctx.fillRect(W - 32, 0, 10, H);
+    ctx.shadowBlur = 0;
+
     const texture = new THREE.CanvasTexture(canvas);
     texture.wrapS = THREE.RepeatWrapping;
     texture.wrapT = THREE.RepeatWrapping;
-    texture.repeat.set(16, 16);
     texture.colorSpace = THREE.SRGBColorSpace;
+    texture.anisotropy = 16;
     return texture;
+  }
+
+  // Fine bump detail so low-angle light catches the asphalt surface
+  private createRoadBumpTexture(): THREE.CanvasTexture {
+    const S = 512;
+    const canvas = document.createElement('canvas');
+    canvas.width = S;
+    canvas.height = S;
+    const ctx = canvas.getContext('2d')!;
+    const img = ctx.createImageData(S, S);
+    for (let i = 0; i < img.data.length; i += 4) {
+      const v = Math.random() > 0.6 ? 150 + Math.random() * 105 : 60 + Math.random() * 80;
+      img.data[i] = img.data[i + 1] = img.data[i + 2] = v;
+      img.data[i + 3] = 255;
+    }
+    ctx.putImageData(img, 0, 0);
+    const tex = new THREE.CanvasTexture(canvas);
+    tex.wrapS = THREE.RepeatWrapping;
+    tex.wrapT = THREE.RepeatWrapping;
+    tex.repeat.set(6, 34);
+    tex.anisotropy = 16;
+    return tex;
+  }
+
+  // Tileable ripple normal map for the bay water
+  private createWaterNormalTexture(): THREE.CanvasTexture {
+    const S = 256;
+    const height = new Float32Array(S * S);
+    const waves = Array.from({ length: 10 }, () => ({
+      kx: Math.round((Math.random() - 0.5) * 12),
+      ky: Math.round((Math.random() - 0.5) * 12) || 1,
+      a: 0.4 + Math.random(),
+      p: Math.random() * Math.PI * 2,
+    }));
+    for (let y = 0; y < S; y++) {
+      for (let x = 0; x < S; x++) {
+        let h = 0;
+        for (const w of waves) {
+          h += w.a * Math.sin(((w.kx * x + w.ky * y) / S) * Math.PI * 2 + w.p);
+        }
+        height[y * S + x] = h;
+      }
+    }
+    const canvas = document.createElement('canvas');
+    canvas.width = S;
+    canvas.height = S;
+    const ctx = canvas.getContext('2d')!;
+    const img = ctx.createImageData(S, S);
+    for (let y = 0; y < S; y++) {
+      for (let x = 0; x < S; x++) {
+        const hx = height[y * S + ((x + 1) % S)] - height[y * S + ((x - 1 + S) % S)];
+        const hy = height[((y + 1) % S) * S + x] - height[((y - 1 + S) % S) * S + x];
+        const n = new THREE.Vector3(-hx * 0.35, -hy * 0.35, 1).normalize();
+        const i = (y * S + x) * 4;
+        img.data[i] = (n.x * 0.5 + 0.5) * 255;
+        img.data[i + 1] = (n.y * 0.5 + 0.5) * 255;
+        img.data[i + 2] = (n.z * 0.5 + 0.5) * 255;
+        img.data[i + 3] = 255;
+      }
+    }
+    ctx.putImageData(img, 0, 0);
+    const tex = new THREE.CanvasTexture(canvas);
+    tex.wrapS = THREE.RepeatWrapping;
+    tex.wrapT = THREE.RepeatWrapping;
+    tex.repeat.set(60, 60);
+    tex.anisotropy = 16;
+    return tex;
   }
 
   private createBillboardTextures(): THREE.CanvasTexture[] {
@@ -355,6 +457,30 @@ export class HighwayEnvironment {
   private createSunsetBackdrop(): THREE.Group {
     const group = new THREE.Group();
 
+    // Gradient sky dome with atmospheric horizon glow
+    const sky = new THREE.Mesh(new THREE.SphereGeometry(900, 48, 24), createSkyMaterial());
+    sky.renderOrder = -1;
+    sky.frustumCulled = false;
+    group.add(sky);
+
+    // Stars
+    const starCount = 1600;
+    const starPos = new Float32Array(starCount * 3);
+    for (let i = 0; i < starCount; i++) {
+      const theta = Math.random() * Math.PI * 2;
+      const phi = Math.acos(0.15 + Math.random() * 0.85);
+      starPos[i * 3] = 850 * Math.sin(phi) * Math.cos(theta);
+      starPos[i * 3 + 1] = 850 * Math.cos(phi);
+      starPos[i * 3 + 2] = 850 * Math.sin(phi) * Math.sin(theta);
+    }
+    const starGeo = new THREE.BufferGeometry();
+    starGeo.setAttribute('position', new THREE.BufferAttribute(starPos, 3));
+    const stars = new THREE.Points(
+      starGeo,
+      new THREE.PointsMaterial({ color: 0xffffff, size: 1.6, sizeAttenuation: false, transparent: true, opacity: 0.8, fog: false })
+    );
+    group.add(stars);
+
     // Giant Glowing Sunset Sun (Vivid & Clear)
     const sunCanvas = document.createElement('canvas');
     sunCanvas.width = 512;
@@ -383,7 +509,7 @@ export class HighwayEnvironment {
 
     const sunMesh = new THREE.Mesh(
       new THREE.PlaneGeometry(360, 360),
-      new THREE.MeshBasicMaterial({ map: sunTex, transparent: true })
+      new THREE.MeshBasicMaterial({ map: sunTex, transparent: true, fog: false, color: new THREE.Color(1.6, 1.4, 1.4) })
     );
     sunMesh.position.set(0, 55, -520);
     group.add(sunMesh);
@@ -410,8 +536,11 @@ export class HighwayEnvironment {
     const roadGeo = new THREE.PlaneGeometry(this.roadWidth, this.segmentLength);
     const roadMat = new THREE.MeshStandardMaterial({
       map: this.roadTexture,
+      bumpMap: this.roadBumpTexture,
+      bumpScale: 1.2,
       roughness: 0.5,
       metalness: 0.15,
+      envMapIntensity: 0.6,
     });
     this.roadMaterials.push(roadMat);
 
@@ -421,7 +550,13 @@ export class HighwayEnvironment {
     group.add(road);
 
     // Barrier walls with neon strips
-    const barrierMat = new THREE.MeshStandardMaterial({ color: 0x222738, roughness: 0.4, metalness: 0.4 });
+    const barrierMat = new THREE.MeshStandardMaterial({
+      color: 0x6b6d75,
+      roughness: 0.85,
+      metalness: 0.0,
+      bumpMap: this.roadBumpTexture,
+      bumpScale: 0.8,
+    });
     const neonLeftMat = new THREE.MeshBasicMaterial({ color: 0xff007f });
     const neonRightMat = new THREE.MeshBasicMaterial({ color: 0x00f0ff });
 
@@ -706,5 +841,66 @@ export class HighwayEnvironment {
     // Move backdrop with player
     this.sunGroup.position.z = heroZ;
     this.waterMesh.position.z = heroZ;
+    // Keep ripples anchored to the world while the plane follows the player
+    this.waterNormalTexture.offset.set(Date.now() * 0.000012, -heroZ / 1600 * 60 + Date.now() * 0.00002);
   }
+}
+
+// Synthwave dusk sky: deep violet zenith fading into a hot pink / amber horizon
+export function createSkyMaterial(): THREE.ShaderMaterial {
+  return new THREE.ShaderMaterial({
+    side: THREE.BackSide,
+    depthWrite: false,
+    fog: false,
+    uniforms: {
+      zenith: { value: new THREE.Color(0x07031a) },
+      mid: { value: new THREE.Color(0x3a0f5e) },
+      horizon: { value: new THREE.Color(0xff5a7a) },
+      glow: { value: new THREE.Color(0xffb347) },
+      ground: { value: new THREE.Color(0x0b0516) },
+    },
+    vertexShader: `
+      varying vec3 vDir;
+      void main() {
+        vDir = normalize(position);
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+      }
+    `,
+    fragmentShader: `
+      uniform vec3 zenith; uniform vec3 mid; uniform vec3 horizon; uniform vec3 glow; uniform vec3 ground;
+      varying vec3 vDir;
+      void main() {
+        float h = vDir.y;
+        vec3 col = mix(horizon, mid, smoothstep(0.0, 0.22, h));
+        col = mix(col, zenith, smoothstep(0.22, 0.75, h));
+        // Warm sun glow toward the -Z horizon
+        float sunAmt = pow(max(dot(normalize(vec3(vDir.x, 0.0, vDir.z)), vec3(0.0, 0.0, -1.0)), 0.0), 6.0);
+        col += glow * sunAmt * (1.0 - smoothstep(0.0, 0.35, abs(h))) * 0.9;
+        col = mix(col, ground, smoothstep(0.0, -0.08, h));
+        gl_FragColor = vec4(col, 1.0);
+        #include <tonemapping_fragment>
+        #include <colorspace_fragment>
+      }
+    `,
+  });
+}
+
+// Scene used to pre-filter an environment map so reflections match the sky
+export function createSkyEnvironmentScene(): THREE.Scene {
+  const scene = new THREE.Scene();
+  scene.add(new THREE.Mesh(new THREE.SphereGeometry(50, 32, 16), createSkyMaterial()));
+
+  const sun = new THREE.Mesh(new THREE.CircleGeometry(6, 32), new THREE.MeshBasicMaterial({ color: new THREE.Color(8, 4, 2) }));
+  sun.position.set(0, 5, -45);
+  scene.add(sun);
+
+  // Soft overhead light strips (streetlights) for crisp highlights on paint
+  const stripMat = new THREE.MeshBasicMaterial({ color: new THREE.Color(3, 3, 3.2), side: THREE.DoubleSide });
+  for (let i = -2; i <= 2; i++) {
+    const strip = new THREE.Mesh(new THREE.PlaneGeometry(1.2, 30), stripMat);
+    strip.rotation.x = Math.PI / 2;
+    strip.position.set(i * 8, 30, 0);
+    scene.add(strip);
+  }
+  return scene;
 }
